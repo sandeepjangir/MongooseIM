@@ -28,6 +28,7 @@
          dont_retrieve_other_user_private_xml/1,
          retrieve_multiple_private_xmls/1,
          retrieve_inbox/1,
+         remove_inbox/1,
          retrieve_inbox_for_multiple_messages/1,
          retrieve_logs/1
         ]).
@@ -100,12 +101,14 @@ groups() ->
             remove_vcard,
             remove_roster,
             remove_offline
+            remove_inbox
         ]},
         {remove_personal_data_with_mods_disabled, [], [
             % per type
             remove_vcard,
             remove_roster,
             remove_offline
+            remove_inbox
         ]}
     ].
 
@@ -138,6 +141,8 @@ init_per_testcase(retrieve_inbox = CN, Config) ->
 init_per_testcase(remove_offline = CN, Config) ->
     offline_started(),
     escalus:init_per_testcase(CN, Config);
+init_per_testcase(remove_inbox = CN, Config) ->
+    init_inbox(CN, Config);
 init_per_testcase(retrieve_inbox_for_multiple_messages = CN, Config) ->
     init_inbox(CN, Config);
 init_per_testcase(retrieve_vcard = CN, Config) ->
@@ -608,6 +613,34 @@ retrieve_inbox(Config) ->
                             ],
             retrieve_and_validate_personal_data(
               Alice, Config, "inbox", ExpectedHeader, ExpectedAliceItems),
+            retrieve_and_validate_personal_data(
+              Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems)
+        end).
+
+remove_inbox(Config) ->
+    escalus:fresh_story(Config, [{alice, 1}, {bob, 1}], fun(Alice, Bob) ->
+            AliceU = escalus_utils:jid_to_lower(escalus_client:username(Alice)),
+            AliceS = escalus_utils:jid_to_lower(escalus_client:server(Alice)),
+            Body = <<"With spam?">>,
+            send_and_assert_is_chat_message(Bob, Alice, Body),
+
+            ExpectedHeader = ["jid", "content", "unread_count", "timestamp"],
+
+            maybe_stop_and_unload_module(mod_inbox, mod_inbox_backend, Config),
+            {0, _} = unregister(Alice, Config),
+
+            mongoose_helper:wait_until(
+              fun() ->
+                      mongoose_helper:successful_rpc(mod_inbox, get_personal_data,
+                                                     [AliceU, AliceS])
+              end, [{inbox, ExpectedHeader, []}]),
+
+            ExpectedBobItems = [
+                             #{ "content" => [{contains, Body}],
+                                "jid" => [{contains, AliceS},
+                                          {contains, AliceU}],
+                                "unread_count" => "0" }
+                            ],
             retrieve_and_validate_personal_data(
               Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems)
         end).
