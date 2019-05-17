@@ -6,6 +6,8 @@
 -include_lib("escalus/include/escalus.hrl").
 -include_lib("escalus/include/escalus_xmlns.hrl").
 -include_lib("exml/include/exml.hrl").
+-include("inbox.hrl").
+-include("muc_light.hrl").
 
 -export([suite/0, all/0, groups/0]).
 -export([init_per_suite/1, end_per_suite/1]).
@@ -30,6 +32,8 @@
          retrieve_inbox/1,
          remove_inbox/1,
          retrieve_inbox_for_multiple_messages/1,
+         retrieve_inbox_muclight/1,
+         remove_inbox_muclight/1,
          retrieve_logs/1
         ]).
 -export([
@@ -40,6 +44,12 @@
 
 -import(distributed_helper, [mim/0,
                              rpc/4]).
+
+-import(muc_light_helper, [room_bin_jid/1, stanza_destroy_room/1]).
+
+-define(ROOM, <<"tt1">>).
+
+-define(MUCHOST,                <<"muclight.@HOST@">>).
 
 %% -------------------------------------------------------------
 %% Common Test stuff
@@ -66,12 +76,16 @@ groups() ->
                                            retrieve_roster,
                                            %retrieve_mam,
                                            retrieve_offline,
-                                           retrieve_inbox,
-                                           retrieve_inbox_for_multiple_messages,
                                            retrieve_logs,
                                            {group, retrieve_personal_data_pubsub},
+                                           {group, retrieve_personal_data_inbox},
                                            {group, retrieve_personal_data_private_xml}
                                           ]},
+    {retrieve_personal_data_inbox, [],[
+        retrieve_inbox,
+        retrieve_inbox_for_multiple_messages,
+        retrieve_inbox_muclight
+    ]},
      {retrieve_personal_data_pubsub, [], [
                                           retrieve_pubsub_payloads,
                                           dont_retrieve_other_user_pubsub_payload,
@@ -81,7 +95,7 @@ groups() ->
                                          ]},
      {retrieve_personal_data_with_mods_disabled, [], [
                                                       retrieve_vcard,
-                                                      retrieve_inbox,
+                                                      {group, retrieve_personal_data_inbox},
                                                       retrieve_offline,
                                                       retrieve_logs,
                                                       retrieve_roster,
@@ -100,15 +114,17 @@ groups() ->
             % per type
             remove_vcard,
             remove_roster,
-            remove_offline
-            remove_inbox
+            remove_offline,
+            remove_inbox,
+            remove_inbox_muclight
         ]},
         {remove_personal_data_with_mods_disabled, [], [
             % per type
             remove_vcard,
             remove_roster,
-            remove_offline
-            remove_inbox
+            remove_offline,
+            remove_inbox,
+            remove_inbox_muclight
         ]}
     ].
 
@@ -117,6 +133,8 @@ init_per_suite(Config) ->
     escalus:init_per_suite(Config1).
 
 end_per_suite(Config) ->
+    muc_light_helper:clear_db(),
+
     delete_files(),
     dynamic_modules:restore_modules(domain(), Config),
     escalus_fresh:clean(),
@@ -130,6 +148,8 @@ init_per_group(remove_personal_data_with_mods_disabled, Config) ->
 init_per_group(retrieve_personal_data_pubsub, Config) ->
     dynamic_modules:ensure_modules(domain(), pubsub_required_modules()),
     Config;
+init_per_group(retrieve_personal_data_inbox = GN, Config) ->
+    init_inbox(GN, Config);
 init_per_group(_GN, Config) ->
     Config.
 
@@ -143,7 +163,21 @@ init_per_testcase(remove_offline = CN, Config) ->
     escalus:init_per_testcase(CN, Config);
 init_per_testcase(remove_inbox = CN, Config) ->
     init_inbox(CN, Config);
-init_per_testcase(retrieve_inbox_for_multiple_messages = CN, Config) ->
+init_per_testcase(retrieve_inbox_muclight = CN, Config) when
+      CN =:= remove_inbox_muclight ;
+      CN =:= retrieve_inbox_muclight ->
+    Host = ct:get_config({hosts, mim, domain}),
+    dynamic_modules:ensure_modules(Host, [{mod_muc_light,
+                                           [{host, binary_to_list(?MUCHOST)},
+                                            {backend, mongoose_helper:mnesia_or_rdbms_backend()},
+                                            {rooms_in_rosters, true}]}]),
+    init_inbox(CN, Config);
+init_per_testcase(remove_inbox_muclight = CN, Config) ->
+    Host = ct:get_config({hosts, mim, domain}),
+    dynamic_modules:ensure_modules(Host, [{mod_muc_light,
+                                           [{host, binary_to_list(?MUCHOST)},
+                                            {backend, mongoose_helper:mnesia_or_rdbms_backend()},
+                                            {rooms_in_rosters, true}]}]),
     init_inbox(CN, Config);
 init_per_testcase(retrieve_vcard = CN, Config) ->
     case vcard_update:is_vcard_ldap() of
@@ -175,6 +209,11 @@ init_per_testcase(remove_roster = CN, Config) ->
 init_per_testcase(CN, Config) ->
     escalus:init_per_testcase(CN, Config).
 
+end_per_testcase(CN, Config) when
+      CN =:= remove_inbox_muclight;
+      CN =:= retrieve_inbox_muclight ->
+    muc_light_helper:clear_db(),
+    escalus:end_per_testcase(CN, Config);
 end_per_testcase(CN, Config) ->
     escalus_fresh:clean(),
     escalus:end_per_testcase(CN, Config).
@@ -198,6 +237,19 @@ inbox_opts() ->
      {remove_on_kicked, true},
      {groupchat, [muclight]},
      {markers, [displayed]}].
+
+prepare_room(Owner, Members, Config) ->
+    muc_light_helper:create_room(?ROOM, muclight_domain(), Owner,
+                                 Members, Config, muc_light_helper:ver(1)).
+
+send_message_to_room(Sender, Msg) ->
+        RoomJid = room_bin_jid(?ROOM),
+        Stanza = escalus_stanza:groupchat_to(RoomJid, Msg),
+        escalus:send(Sender, Stanza).
+
+muclight_domain() ->
+    Domain = inbox_helper:domain(),
+    <<"muclight.", Domain/binary>>.
 
 pick_backend_for_mam() ->
     BackendsList = [
@@ -590,6 +642,41 @@ retrieve_multiple_private_xmls(Config) ->
               Alice, Config, "private", ExpectedHeader, ExpectedItems)
         end).
 
+retrieve_inbox_muclight(Config) ->
+    escalus:fresh_story(Config, [{alice, 1}, {bob, 1}], fun(Alice, Bob) ->
+        muc_light_helper:given_muc_light_room(?ROOM, Alice, [{Bob, member}]),
+
+        Body = <<"Are you sure?">>,
+        Res = muc_light_helper:when_muc_light_message_is_sent(Alice, ?ROOM, Body, <<"9128">>),
+        muc_light_helper:then_muc_light_message_is_received_by([Alice, Bob], Res),
+        ExpectedHeader = ["jid", "content", "unread_count", "timestamp"],
+        %% MUC Light affiliations are also stored in inbox
+        ExpectedAliceItems = [
+                         #{
+                            "jid" => [{contains, <<"muclight.localhost">>},
+                                      {contains, ?ROOM}],
+                            "unread_count" => "0" }
+                        ],
+        %% MUC Light affiliations are also stored in inbox
+        ExpectedBobItems = [
+                         #{
+                            "jid" => [{contains, <<"muclight.localhost">>},
+                                      {contains, ?ROOM}],
+                            "unread_count" => "2" }
+                        ],
+
+         retrieve_and_validate_personal_data(
+           Alice, Config, "inbox", ExpectedHeader, ExpectedAliceItems),
+         retrieve_and_validate_personal_data(
+           Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems),
+
+        StanzaDestroy = escalus_stanza:to(escalus_stanza:iq_set(?NS_MUC_LIGHT_DESTROY, []),
+                                      room_bin_jid(?ROOM)),
+        escalus:send(Alice, StanzaDestroy),
+        ok
+        end).
+
+
 retrieve_inbox(Config) ->
     escalus:fresh_story(Config, [{alice, 1}, {bob, 1}], fun(Alice, Bob) ->
             BobU = escalus_utils:jid_to_lower(escalus_client:username(Bob)),
@@ -643,6 +730,46 @@ remove_inbox(Config) ->
                             ],
             retrieve_and_validate_personal_data(
               Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems)
+        end).
+
+remove_inbox_muclight(Config) ->
+    escalus:fresh_story(Config, [{alice, 1}, {bob, 1}], fun(Alice, Bob) ->
+        AliceU = escalus_utils:jid_to_lower(escalus_client:username(Alice)),
+        AliceS = escalus_utils:jid_to_lower(escalus_client:server(Alice)),
+
+        muc_light_helper:given_muc_light_room(?ROOM, Alice, [{Bob, member}]),
+
+        Body = <<"Are you sure?">>,
+        Res = muc_light_helper:when_muc_light_message_is_sent(Alice, ?ROOM, Body, <<"9128">>),
+        muc_light_helper:then_muc_light_message_is_received_by([Alice, Bob], Res),
+
+        ExpectedHeader = ["jid", "content", "unread_count", "timestamp"],
+
+        maybe_stop_and_unload_module(mod_inbox, mod_inbox_backend, Config),
+        {0, _} = unregister(Alice, Config),
+
+        mongoose_helper:wait_until(
+          fun() ->
+                  mongoose_helper:successful_rpc(mod_inbox, get_personal_data,
+                                                 [AliceU, AliceS])
+          end, [{inbox, ExpectedHeader, []}]),
+
+        escalus:wait_for_stanza(Bob),
+        %% MUC Light affiliations are also stored in inbox
+        ExpectedBobItems = [
+                         #{
+                            "jid" => [{contains, <<"muclight.localhost">>},
+                                      {contains, ?ROOM}],
+                            "unread_count" => "3" }
+                        ],
+
+         retrieve_and_validate_personal_data(
+           Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems),
+
+        StanzaDestroy = escalus_stanza:to(escalus_stanza:iq_set(?NS_MUC_LIGHT_DESTROY, []),
+                                      room_bin_jid(?ROOM)),
+        escalus:send(Alice, StanzaDestroy),
+        ok
         end).
 
 retrieve_inbox_for_multiple_messages(Config) ->
