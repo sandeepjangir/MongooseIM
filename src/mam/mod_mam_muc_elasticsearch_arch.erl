@@ -31,6 +31,9 @@
 -export([remove_archive/4]).
 -export([archive_size/4]).
 
+%gdpr
+-export([get_mam_muc_gdpr_data/2]).
+
 -include("mongoose.hrl").
 -include("mongoose_rsm.hrl").
 -include("mod_mam.hrl").
@@ -56,6 +59,25 @@ stop(Host) ->
 %%-------------------------------------------------------------------
 %% ejabberd_gen_mam_archive callbacks
 %%-------------------------------------------------------------------
+-spec get_mam_muc_gdpr_data(jid:username(), jid:server()) ->
+    {ok, ejabberd_gen_mam_archive:mam_gdpr_data()}.
+get_mam_muc_gdpr_data(_,_) ->
+    {ok, []}; %%dummy implementation for now.
+get_mam_muc_gdpr_data(User, Host) ->
+    Source = jid:make(User, Host, <<"">>),
+    BinSource = mod_mam_utils:bare_jid(Source),
+    %%replace source_bare_jid with proper field name
+    Filter = #{term => #{source_bare_jid => BinSource}},
+    Sorting = #{mam_id => #{order => asc}},
+    SearchQuery = #{query => #{bool => #{filter => Filter}},
+                    sort => Sorting},
+    case mongoose_elasticsearch:search(?INDEX_NAME, ?TYPE_NAME, SearchQuery) of
+        {ok, #{<<"hits">> := #{<<"hits">> := Hits}}} ->
+            Messages = lists:map(fun hit_to_gdpr_mam_message/1, Hits),
+            {ok, Messages};
+        {error, _} ->
+            {ok, []}
+    end.
 
 archive_message(_Result, Host, MessageId, _UserId, RoomJid, _SourceJid, SourceJid, _Dir, Packet) ->
     Room = mod_mam_utils:bare_jid(RoomJid),
@@ -256,6 +278,11 @@ hit_to_mam_message(#{<<"_source">> := JSON}) ->
 
     {ok, Stanza} = exml:parse(Packet),
     {MessageId, jid:from_binary(SourceJid), Stanza}.
+
+hit_to_gdpr_mam_message(#{<<"_source">> := JSON}) ->
+    MessageId = maps:get(<<"mam_id">>, JSON),
+    Packet = maps:get(<<"message">>, JSON),
+    {integer_to_binary(MessageId), Packet}.
 
 %% Usage of RSM affects the `"total"' value returned by ElasticSearch. Per RSM spec, the count
 %% returned by the query should represent the size of the whole result set, which in case of MAM
