@@ -35,6 +35,7 @@
          retrieve_inbox_muclight/1,
          retrieve_inbox_muc/1,
          remove_inbox_muclight/1,
+         remove_inbox_muc/1,
          retrieve_logs/1
         ]).
 -export([
@@ -118,7 +119,8 @@ groups() ->
             remove_roster,
             remove_offline,
             remove_inbox,
-            remove_inbox_muclight
+            remove_inbox_muclight,
+            remove_inbox_muc
         ]},
         {remove_personal_data_with_mods_disabled, [], [
             % per type
@@ -126,7 +128,8 @@ groups() ->
             remove_roster,
             remove_offline,
             remove_inbox,
-            remove_inbox_muclight
+            remove_inbox_muclight,
+            remove_inbox_muc
         ]}
     ].
 
@@ -822,6 +825,45 @@ remove_inbox_muclight(Config) ->
         escalus:send(Alice, StanzaDestroy),
         ok
         end).
+
+remove_inbox_muc(Config) ->
+    escalus:story(Config, [{alice, 1}, {bob, 1}], fun(Alice, Bob) ->
+        AliceU = escalus_utils:jid_to_lower(escalus_client:username(Alice)),
+        AliceS = escalus_utils:jid_to_lower(escalus_client:server(Alice)),
+
+        Users = [Alice, Bob],
+        Msg = <<"Hi Room!">>,
+        Id = <<"MyID">>,
+        Room = ?config(room, Config),
+        RoomAddr = muc_helper:room_address(Room),
+
+        inbox_helper:enter_room(Room, Users),
+        inbox_helper:make_members(Room, Alice, Users -- [Alice]),
+        Stanza = escalus_stanza:set_id(
+          escalus_stanza:groupchat_to(RoomAddr, Msg), Id),
+        escalus:send(Bob, Stanza),
+        inbox_helper:wait_for_groupchat_msg(Users),
+
+        ExpectedHeader = ["jid", "content", "unread_count", "timestamp"],
+
+        maybe_stop_and_unload_module(mod_inbox, mod_inbox_backend, Config),
+        {0, _} = unregister(Alice, Config),
+
+        escalus:wait_for_stanza(Bob),
+        mongoose_helper:wait_until(
+        fun() ->
+                mongoose_helper:successful_rpc(mod_inbox, get_personal_data,
+                                               [AliceU, AliceS])
+        end, [{inbox, ExpectedHeader, []}]),
+
+        ExpectedBobItems = [
+                         #{
+                            "unread_count" => "0" }
+                        ],
+
+         retrieve_and_validate_personal_data(
+           Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems)
+      end).
 
 retrieve_inbox_for_multiple_messages(Config) ->
     escalus:fresh_story(Config, [{alice, 1}, {bob, 1}], fun(Alice, Bob) ->
