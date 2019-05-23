@@ -668,25 +668,24 @@ retrieve_inbox_muclight(Config) ->
         Res = muc_light_helper:when_muc_light_message_is_sent(Alice, ?ROOM, Body, <<"9128">>),
         muc_light_helper:then_muc_light_message_is_received_by([Alice, Bob], Res),
         ExpectedHeader = ["jid", "content", "unread_count", "timestamp"],
-        %% MUC Light affiliations are also stored in inbox
         ExpectedAliceItems = [
-                         #{
-                            "jid" => [{contains, <<"muclight.localhost">>},
-                                      {contains, ?ROOM}],
-                            "unread_count" => "0" }
-                        ],
+                              #{
+          "jid" => [{contains, <<"muclight.localhost">>},
+                    {contains, ?ROOM}],
+          "unread_count" => "0" }
+                             ],
         %% MUC Light affiliations are also stored in inbox
         ExpectedBobItems = [
-                         #{
-                            "jid" => [{contains, <<"muclight.localhost">>},
-                                      {contains, ?ROOM}],
-                            "unread_count" => "2" }
-                        ],
+                            #{
+          "jid" => [{contains, <<"muclight.localhost">>},
+                    {contains, ?ROOM}],
+          "unread_count" => "2" }
+                           ],
 
-         retrieve_and_validate_personal_data(
-           Alice, Config, "inbox", ExpectedHeader, ExpectedAliceItems),
-         retrieve_and_validate_personal_data(
-           Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems),
+        retrieve_and_validate_personal_data(
+          Alice, Config, "inbox", ExpectedHeader, ExpectedAliceItems),
+        retrieve_and_validate_personal_data(
+          Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems),
 
         StanzaDestroy = escalus_stanza:to(escalus_stanza:iq_set(?NS_MUC_LIGHT_DESTROY, []),
                                       room_bin_jid(?ROOM)),
@@ -705,24 +704,23 @@ retrieve_inbox_muc(Config) ->
         inbox_helper:enter_room(Room, Users),
         inbox_helper:make_members(Room, Alice, Users -- [Alice]),
         Stanza = escalus_stanza:set_id(
-          escalus_stanza:groupchat_to(RoomAddr, Msg), Id),
+                   escalus_stanza:groupchat_to(RoomAddr, Msg), Id),
         escalus:send(Bob, Stanza),
         inbox_helper:wait_for_groupchat_msg(Users),
-        [AliceJid, BobJid] = lists:map(fun inbox_helper:to_bare_lower/1, Users),
-        BobRoomJid = muc_helper:room_address(Room, inbox_helper:nick(Bob)),
 
         ExpectedHeader = ["jid", "content", "unread_count", "timestamp"],
         ExpectedAliceItems = [
-                         #{
-                            "unread_count" => "1" }
-                        ],
-        %% MUC Light affiliations are also stored in inbox
-        ExpectedBobItems = [
-                         #{
-                            "unread_count" => "0" }
-                        ],
+                              #{ "content" => [{contains, Msg}],
+                                 "jid" => [{contains, Room},
+                                           {contains, muc_domain()}],
+                                 "unread_count" => "1" }
+                             ],
+        ExpectedBobItems = [#{
+          "jid" => [{contains, Room},
+                    {contains, muc_domain()}],
+          "unread_count" => "0" }],
 
-         retrieve_and_validate_personal_data(
+        retrieve_and_validate_personal_data(
            Alice, Config, "inbox", ExpectedHeader, ExpectedAliceItems),
          retrieve_and_validate_personal_data(
            Bob, Config, "inbox", ExpectedHeader, ExpectedBobItems),
@@ -812,7 +810,7 @@ remove_inbox_muclight(Config) ->
         %% MUC Light affiliations are also stored in inbox
         ExpectedBobItems = [
                          #{
-                            "jid" => [{contains, <<"muclight.localhost">>},
+                            "jid" => [{contains, muclight_domain()},
                                       {contains, ?ROOM}],
                             "unread_count" => "3" }
                         ],
@@ -858,6 +856,9 @@ remove_inbox_muc(Config) ->
 
         ExpectedBobItems = [
                          #{
+                            "jid" => [{contains, Room},
+                                      {contains, muc_domain()}],
+
                             "unread_count" => "0" }
                         ],
 
